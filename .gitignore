@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Node.js logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# Python environments and caches
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# Machine-learning artifacts
+*.pt
+*.onnx
+runs/
+weights/
+
+# Frontend build output
+dist/
+build/
+
+# Dataset caches and generated training output
+*.cache
+
+# Editors
+.vscode/
+.idea/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
