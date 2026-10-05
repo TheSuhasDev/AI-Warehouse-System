@@ -266,10 +266,6 @@ Camera → YOLO detection → dispatch cart → client details
 → stock deduction → DISPATCH movement → invoice
 ```
 
-## Screenshots
-
-Screenshots can be added here.
-
 ## Security
 
 - Never commit `.env` files, credentials, or API keys.
@@ -297,6 +293,3 @@ Potential future work includes:
 - Barcode/QR integration
 - Advanced invoice and export reporting
 
-## License
-
-License to be added.
