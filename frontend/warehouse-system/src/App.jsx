@@ -5,7 +5,7 @@ const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 const AI_API_URL = import.meta.env.VITE_AI_API_URL || import.meta.env.VITE_AI_URL || "http://127.0.0.1:8001";
 // Replace these prototype values with verified seller details before commercial use.
 const INVOICE_SELLER_DETAILS = {
-  name: "DENIKA BUSINESS SOLUTIONS",
+  name: "DENIKA AND TEAM SOLUTIONS",
   address: "Bangalore, Karnataka, India",
   phone: "+91 98765 43210",
   email: "info@denikabusiness.com",
@@ -54,19 +54,6 @@ function amountInWords(value) {
   if (thousand) parts.push(`${wordsBelowThousand(thousand)} Thousand`);
   if (remainder) parts.push(wordsBelowThousand(remainder));
   return `Rupees ${parts.join(" ")} Only`;
-}
-
-function NexusIcon() {
-  return (
-    <svg className="nexus-icon" viewBox="0 0 48 48" role="img" aria-label="Nexus WMS">
-      <path className="nexus-roof" d="M7 22 24 10l17 12" />
-      <path className="nexus-structure" d="M10 21v18h28V21M10 28h28M24 21v18" />
-      <path className="nexus-box" d="M14 31h6v5h-6zM28 25h6v5h-6z" />
-      <circle className="nexus-node nexus-node-one" cx="39" cy="10" r="3" />
-      <circle className="nexus-node nexus-node-two" cx="32" cy="7" r="2" />
-      <path className="nexus-connect" d="m32 8 5 2" />
-    </svg>
-  );
 }
 
 async function api(path, options = {}) {
@@ -141,8 +128,7 @@ function App() {
     <div className="app">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark"><NexusIcon /></div>
-          <div><strong>NEXUS WMS</strong><span>AI-powered warehouse operations</span></div>
+          <img className="sidebar-logo" src="/logo1.png" alt="Denika and Team Solutions" />
         </div>
         <nav>
           {[
@@ -460,7 +446,8 @@ function Invoice({ invoice, onClose }) {
         </div>
         <header className="invoice-header">
           <div>
-            <p className="invoice-company">DENIKA BUSINESS SOLUTIONS</p>
+            <img className="invoice-logo" src="/logo2.png" alt="Denika and Team Solutions" />
+            <p className="invoice-company">DENIKA AND TEAM SOLUTIONS</p>
             <p className="invoice-document-title">TAX INVOICE</p>
           </div>
           <dl className="invoice-meta">
@@ -518,7 +505,7 @@ function Invoice({ invoice, onClose }) {
         </section>
         <footer className="invoice-footer">
           <p>Thank you for your business.</p>
-          <div><strong>For Denika Business Solutions</strong><span className="sample-signature" aria-label="Sample digital signature">Denika Business Solutions</span><span>Authorized Signatory</span></div>
+          <div><strong>For Denika and Team Solutions</strong><span className="sample-signature" aria-label="Sample digital signature">Denika and Team Solutions</span><span>Authorized Signatory</span></div>
         </footer>
       </article>
     </div>
