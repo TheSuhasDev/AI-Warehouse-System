@@ -17,7 +17,7 @@ router.get("/", async (req, res) => {
     res.json(products);
   } catch (error) {
     res.status(500).json({
-      message: "Failed to fetch products",
+      message: "Unable to load products",
       error: error.message,
     });
   }
@@ -61,7 +61,7 @@ router.get("/dashboard", async (req, res) => {
       recentMovements,
     });
   } catch (error) {
-    res.status(500).json({ message: "Failed to fetch dashboard data" });
+    res.status(500).json({ message: "Unable to load dashboard data" });
   }
 });
 
@@ -83,7 +83,7 @@ router.patch("/:id/receive", async (req, res) => {
         $inc: { stock: parsedQuantity },
       },
       {
-        new: true,
+        returnDocument: "after",
       }
     );
 
@@ -121,7 +121,7 @@ router.get("/movements/history", async (req, res) => {
     res.json(movements);
   } catch (error) {
     res.status(500).json({
-      message: "Failed to fetch stock history",
+      message: "Unable to load stock history",
       error: error.message,
     });
   }
@@ -202,7 +202,7 @@ router.post("/dispatch/transaction", async (req, res) => {
         const product = await Product.findOneAndUpdate(
           { _id: item.productId, stock: { $gte: quantity } },
           { $inc: { stock: -quantity } },
-          { new: true, session }
+          { returnDocument: "after", session }
         );
         if (!product) throw new Error("A product is missing or has insufficient stock");
 

@@ -5,6 +5,7 @@ node_modules/
 .env
 .env.*
 !.env.example
+!.env.example.*
 
 # Node.js logs
 npm-debug.log*
@@ -19,16 +20,24 @@ __pycache__/
 *.py[cod]
 *.pyo
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # Machine-learning artifacts
 *.pt
 *.onnx
 runs/
 weights/
+**/runs/
+**/weights/
+**/datasets/
+**/dataset-cache/
 
 # Frontend build output
 dist/
 build/
+**/dist/
+**/build/
 
 # Dataset caches and generated training output
 *.cache
@@ -44,3 +53,6 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+*.swp
+*.swo
+*.bak

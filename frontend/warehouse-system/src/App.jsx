@@ -2,7 +2,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import "./App.css";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
-const AI_URL = import.meta.env.VITE_AI_URL || "http://127.0.0.1:8001";
+const AI_API_URL = import.meta.env.VITE_AI_API_URL || import.meta.env.VITE_AI_URL || "http://127.0.0.1:8001";
+// Replace these prototype values with verified seller details before commercial use.
+const INVOICE_SELLER_DETAILS = {
+  name: "DENIKA BUSINESS SOLUTIONS",
+  address: "Bangalore, Karnataka, India",
+  phone: "+91 98765 43210",
+  email: "info@denikabusiness.com",
+  gstin: "29ABCDE1234F1Z5",
+};
 const PRODUCT_CLASSES = {
   drill: "DRL001",
   hammer: "HAM001",
@@ -10,33 +18,121 @@ const PRODUCT_CLASSES = {
   screwdriver: "SCR001",
   wrench: "WRC001",
 };
+const AI_CONFIDENCE_THRESHOLD = 0.7;
+const AI_STABLE_FRAMES = 3;
 const currency = (value) =>
   `₹${Number(value || 0).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
+const invoiceCurrency = (value) =>
+  `₹${Number(value || 0).toLocaleString("en-IN", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+
+const numberWords = [
+  "Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight", "Nine",
+  "Ten", "Eleven", "Twelve", "Thirteen", "Fourteen", "Fifteen", "Sixteen",
+  "Seventeen", "Eighteen", "Nineteen",
+];
+const tensWords = ["", "", "Twenty", "Thirty", "Forty", "Fifty", "Sixty", "Seventy", "Eighty", "Ninety"];
+
+function wordsBelowThousand(value) {
+  if (value < 20) return numberWords[value];
+  if (value < 100) return `${tensWords[Math.floor(value / 10)]}${value % 10 ? ` ${numberWords[value % 10]}` : ""}`;
+  return `${numberWords[Math.floor(value / 100)]} Hundred${value % 100 ? ` ${wordsBelowThousand(value % 100)}` : ""}`;
+}
+
+function amountInWords(value) {
+  const amount = Math.round(Number(value) || 0);
+  if (!amount) return "Rupees Zero Only";
+  const parts = [];
+  const crore = Math.floor(amount / 10000000);
+  const lakh = Math.floor((amount % 10000000) / 100000);
+  const thousand = Math.floor((amount % 100000) / 1000);
+  const remainder = amount % 1000;
+  if (crore) parts.push(`${wordsBelowThousand(crore)} Crore`);
+  if (lakh) parts.push(`${wordsBelowThousand(lakh)} Lakh`);
+  if (thousand) parts.push(`${wordsBelowThousand(thousand)} Thousand`);
+  if (remainder) parts.push(wordsBelowThousand(remainder));
+  return `Rupees ${parts.join(" ")} Only`;
+}
+
+function NexusIcon() {
+  return (
+    <svg className="nexus-icon" viewBox="0 0 48 48" role="img" aria-label="Nexus WMS">
+      <path className="nexus-roof" d="M7 22 24 10l17 12" />
+      <path className="nexus-structure" d="M10 21v18h28V21M10 28h28M24 21v18" />
+      <path className="nexus-box" d="M14 31h6v5h-6zM28 25h6v5h-6z" />
+      <circle className="nexus-node nexus-node-one" cx="39" cy="10" r="3" />
+      <circle className="nexus-node nexus-node-two" cx="32" cy="7" r="2" />
+      <path className="nexus-connect" d="m32 8 5 2" />
+    </svg>
+  );
+}
 
 async function api(path, options = {}) {
-  const response = await fetch(`${API_URL}${path}`, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
-  });
+  let response;
+  try {
+    response = await fetch(`${API_URL}${path}`, {
+      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+      ...options,
+    });
+
+  } catch (error) {
+    throw new Error("Unable to reach the warehouse server. Check that the Express backend is running.", { cause: error });
+  }
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.message || "Request failed");
+  if (!response.ok) {
+    const serverMessage = typeof data.message === "string" ? data.message : "";
+    throw new Error(serverMessage || "Warehouse request failed");
+  }
   return data;
+}
+
+async function predictImage(blob, signal) {
+  const form = new FormData();
+  form.append("file", blob, "warehouse-frame.jpg");
+  let response;
+  try {
+    response = await fetch(`${AI_API_URL}/predict`, { method: "POST", body: form, signal });
+  } catch (error) {
+    if (error.name === "AbortError") throw error;
+    console.error("AI prediction network error", {
+      endpoint: `${AI_API_URL}/predict`,
+      errorName: error.name,
+    });
+    throw new Error("AI service unavailable. Make sure the FastAPI server is running.", { cause: error });
+  }
+
+  const result = await response.json().catch(() => null);
+  if (!response.ok) {
+    console.error("AI prediction HTTP error:", response.status, result);
+    throw new Error(result?.detail || "AI prediction request failed.");
+  }
+  if (!result || !Array.isArray(result.detections)) {
+    console.error("AI prediction invalid response:", result);
+    throw new Error("AI service returned an invalid prediction response.");
+  }
+  return result;
 }
 
 function App() {
   const [activePage, setActivePage] = useState("dashboard");
   const [refreshKey, setRefreshKey] = useState(0);
+  const [invoicePreview, setInvoicePreview] = useState(null);
   const refresh = () => setRefreshKey((key) => key + 1);
   useEffect(() => {
     const navigate = (event) => setActivePage(event.detail);
+    const showInvoice = (event) => setInvoicePreview(event.detail);
     window.addEventListener("wms-navigate", navigate);
-    return () => window.removeEventListener("wms-navigate", navigate);
+    window.addEventListener("wms-show-invoice", showInvoice);
+    return () => { window.removeEventListener("wms-navigate", navigate); window.removeEventListener("wms-show-invoice", showInvoice); };
   }, []);
 
   const pageTitles = {
     dashboard: ["Dashboard", "Operational overview and warehouse activity"],
     receive: ["Receive stock", "Use AI vision to count incoming tools"],
     dispatch: ["Dispatch stock", "Build an order, verify inventory, and create an invoice"],
+    orders: ["Orders", "Track payment, packing, and dispatch lifecycle"],
     inventory: ["Inventory", "Current stock levels and storage locations"],
     history: ["Stock history", "Auditable receive and dispatch movements"],
   };
@@ -45,14 +141,15 @@ function App() {
     <div className="app">
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">SW</div>
-          <div><strong>Warehouse OS</strong><span>Industrial operations</span></div>
+          <div className="brand-mark"><NexusIcon /></div>
+          <div><strong>NEXUS WMS</strong><span>AI-powered warehouse operations</span></div>
         </div>
         <nav>
           {[
             ["dashboard", "Dashboard", "▦"],
             ["receive", "Receive", "↓"],
             ["dispatch", "Dispatch", "↑"],
+            ["orders", "Orders", "◫"],
             ["inventory", "Inventory", "▤"],
             ["history", "Stock history", "◷"],
           ].map(([page, label, icon]) => (
@@ -67,16 +164,17 @@ function App() {
         <header className="topbar">
           <div><p className="eyebrow">WAREHOUSE CONTROL CENTER</p><h1>{pageTitles[activePage][0]}</h1><p>{pageTitles[activePage][1]}</p></div>
           <div className="header-tools">
-            <div className="ai-status"><span className="status-dot" /> AI system online</div>
             <div className="date-chip">{new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" })}</div>
           </div>
         </header>
         {activePage === "dashboard" && <Dashboard refreshKey={refreshKey} />}
         {activePage === "receive" && <Receive onChanged={refresh} />}
         {activePage === "dispatch" && <Dispatch onChanged={refresh} />}
+        {activePage === "orders" && <Orders refreshKey={refreshKey} />}
         {activePage === "inventory" && <Inventory refreshKey={refreshKey} />}
         {activePage === "history" && <History refreshKey={refreshKey} />}
       </main>
+      {invoicePreview && <Invoice invoice={invoicePreview} onClose={() => setInvoicePreview(null)} />}
     </div>
   );
 }
@@ -169,6 +267,7 @@ function CameraScanner({ onDetections, active, onError }) {
   const timerRef = useRef(null);
   const requestRef = useRef(null);
   const busyRef = useRef(false);
+  const stabilityRef = useRef({ product: null, count: 0, detection: null });
   const [status, setStatus] = useState("Camera is off");
   const [detections, setDetections] = useState([]);
 
@@ -183,6 +282,7 @@ function CameraScanner({ onDetections, active, onError }) {
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     busyRef.current = false;
+    stabilityRef.current = { product: null, count: 0, detection: null };
 
     if (videoRef.current) {
       videoRef.current.pause();
@@ -205,12 +305,30 @@ function CameraScanner({ onDetections, active, onError }) {
       canvas.getContext("2d").drawImage(video, 0, 0);
       const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.78));
       if (!blob || controller.signal.aborted) return;
-      const form = new FormData(); form.append("file", blob, "warehouse-frame.jpg");
-      const response = await fetch(`${AI_URL}/predict`, { method: "POST", body: form, signal: controller.signal });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(result.detail || "AI service unavailable");
-      const next = (result.detections || []).filter((item) => item.confidence >= 0.6);
-      setDetections(next); onDetections(next); setStatus(next.length ? `${next.length} object${next.length > 1 ? "s" : ""} detected` : "Scanning — no object detected");
+      const result = await predictImage(blob, controller.signal);
+      const next = (result.detections || []).filter((item) => item.confidence >= AI_CONFIDENCE_THRESHOLD);
+      const candidate = next.sort((left, right) => right.confidence - left.confidence)[0];
+      const state = stabilityRef.current;
+      if (!candidate) {
+        stabilityRef.current = { product: null, count: 0, detection: null };
+        setDetections([]);
+        onDetections([]);
+        setStatus("NO VALID PRODUCT DETECTED");
+      } else if (state.product === candidate.product) {
+        state.count += 1;
+        state.detection = candidate;
+        const stable = state.count >= AI_STABLE_FRAMES ? [candidate] : [];
+        setDetections(stable);
+        onDetections(stable);
+        setStatus(state.count >= AI_STABLE_FRAMES
+          ? `${candidate.product.toUpperCase()} · ${(candidate.confidence * 100).toFixed(0)}% · VALID DETECTION`
+          : `Stabilizing ${candidate.product} (${state.count}/${AI_STABLE_FRAMES})`);
+      } else {
+        stabilityRef.current = { product: candidate.product, count: 1, detection: candidate };
+        setDetections([]);
+        onDetections([]);
+        setStatus(`Stabilizing ${candidate.product} (1/${AI_STABLE_FRAMES})`);
+      }
     } catch (error) {
       if (error.name !== "AbortError") {
         setStatus(error.message);
@@ -254,7 +372,7 @@ function CameraScanner({ onDetections, active, onError }) {
     return () => window.removeEventListener("pagehide", handlePageHide);
   }, [stopCamera]);
 
-  return <div className="camera-wrap"><div className="camera-frame"><video ref={videoRef} autoPlay playsInline muted />{detections.map((d, index) => <span className="detection-tag" key={`${d.product}-${index}`} style={{ left: `${(d.box?.x1 || 0) / 6}%`, top: `${(d.box?.y1 || 0) / 5}%` }}>{d.product} {(d.confidence * 100).toFixed(0)}%</span>)}</div><div className="camera-status"><span className="status-dot" />{status}</div></div>;
+  return <div className="camera-wrap"><div className="camera-frame"><video ref={videoRef} autoPlay playsInline muted /><div className="scan-region" />{detections.map((d, index) => <span className="detection-tag" key={`${d.product}-${index}`} style={{ left: `${(d.box?.x1 || 0) / 6}%`, top: `${(d.box?.y1 || 0) / 5}%` }}>{d.product} {(d.confidence * 100).toFixed(0)}%</span>)}</div><div className="camera-status"><span className="status-dot" />{status}</div></div>;
 }
 
 function Receive({ onChanged }) {
@@ -283,7 +401,7 @@ function Receive({ onChanged }) {
     locks.current = nextLocks;
   }, [onChanged, products]);
 
-  return <div className="scanner-layout"><section className="panel scanner-panel"><SectionHeader title="AI receiving station" action="Confidence threshold 60%" />{!active ? <div className="camera-placeholder"><div className="camera-symbol">◉</div><h2>AI Camera Scanner</h2><p>Point the camera at a warehouse product. Stable detections are counted once until the product leaves the frame.</p><button className="button primary" onClick={() => { setMessage(""); setActive(true); }}>Start camera</button></div> : <><CameraScanner active={active} onDetections={handleDetections} onError={setMessage} /><button className="button secondary" onClick={() => setActive(false)}>Stop camera</button></>}</section><section className="panel result-panel"><p className="eyebrow">LATEST RECEIVE</p>{lastResult ? <><div className="detection-card"><ProductIcon name={lastResult.name} /><div><span>Detected product</span><h2>{lastResult.name}</h2><small>SKU {PRODUCT_CLASSES[lastResult.name.toLowerCase()] || "—"}</small></div><span className="result-check">✓</span></div><div className="confidence-row"><span>Confidence</span><strong>{(lastResult.confidence * 100).toFixed(1)}%</strong></div><div className="stock-result"><span>+1 stock added · Updated stock</span><strong>{lastResult.stock} units</strong></div></> : <div className="empty"><span className="empty-icon">◉</span><strong>No AI detection yet</strong><small>Start the camera to begin receiving.</small></div>}{message && <div className="inline-error">{message}</div>}</section></div>;
+  return <div className="scanner-layout"><section className="panel scanner-panel"><SectionHeader title="AI receiving station" action="Confidence threshold 70% · 3 stable frames" />{!active ? <div className="camera-placeholder"><div className="camera-symbol">◉</div><h2>AI Camera Scanner</h2><p>Point the camera at a warehouse product. Stable detections are counted once until the product leaves the frame.</p><button className="button primary" onClick={() => { setMessage(""); setActive(true); }}>Start camera</button></div> : <><CameraScanner active={active} onDetections={handleDetections} onError={setMessage} /><button className="button secondary" onClick={() => setActive(false)}>Stop camera</button></>}</section><section className="panel result-panel"><p className="eyebrow">LATEST RECEIVE</p>{lastResult ? <><div className="detection-card"><ProductIcon name={lastResult.name} /><div><span>Detected product</span><h2>{lastResult.name}</h2><small>SKU {PRODUCT_CLASSES[lastResult.name.toLowerCase()] || "—"}</small></div><span className="result-check">✓</span></div><div className="confidence-row"><span>Confidence</span><strong>{(lastResult.confidence * 100).toFixed(1)}%</strong></div><div className="stock-result"><span>+1 stock added · Updated stock</span><strong>{lastResult.stock} units</strong></div></> : <div className="empty"><span className="empty-icon">◉</span><strong>NO VALID PRODUCT DETECTED</strong><small>Hold one supported tool inside the scan area for three stable frames.</small></div>}{message && <div className="inline-error">{message}</div>}</section></div>;
 }
 
 function Dispatch({ onChanged }) {
@@ -292,10 +410,10 @@ function Dispatch({ onChanged }) {
   const [active, setActive] = useState(false);
   const [client, setClient] = useState({ name: "", phone: "", address: "", gstin: "" });
   const [message, setMessage] = useState("");
-  const [invoice, setInvoice] = useState(null);
+  const [recentOrders, setRecentOrders] = useState([]);
   const locks = useRef([]);
-  const invoiceSequence = useRef(0);
-  useEffect(() => { api("/products").then(setProducts).catch((err) => setMessage(err.message)); }, [invoice]);
+  useEffect(() => { api("/products").then(setProducts).catch((err) => setMessage(err.message)); }, []);
+  useEffect(() => { api("/orders").then((data) => setRecentOrders(Array.isArray(data) ? data.slice(0, 5) : data.orders?.slice(0, 5) || [])).catch(() => {}); }, [onChanged]);
   const addDetection = useCallback((detections) => {
     const nextLocks = [];
     detections.forEach((detection) => {
@@ -312,20 +430,159 @@ function Dispatch({ onChanged }) {
   }, [products]);
   const updateQuantity = (id, value) => setCart((current) => current.map((item) => item._id === id ? { ...item, quantity: Math.max(1, Number(value) || 1) } : item));
   const total = cart.reduce((sum, item) => sum + item.quantity * item.sellingPrice, 0);
-  const confirmDispatch = async () => {
+  const createOrder = async () => {
     if (!client.name.trim() || !client.phone.trim() || !client.address.trim()) return setMessage("Enter client name, phone, and address before confirming.");
+    if (!cart.length) return setMessage("Add at least one product to the order cart.");
     try {
-      await api("/products/dispatch/transaction", { method: "POST", body: JSON.stringify({ client, items: cart.map((item) => ({ productId: item._id, quantity: item.quantity })) }) });
-      invoiceSequence.current += 1;
-      setInvoice({ number: `INV-${String(invoiceSequence.current).padStart(6, "0")}`, date: new Date(), client, items: cart, total });
+      const created = await api("/orders", { method: "POST", body: JSON.stringify({ client, items: cart.map((item) => ({ productId: item._id, quantity: item.quantity })) }) });
+      window.dispatchEvent(new CustomEvent("wms-show-invoice", { detail: buildInvoice(created.order || created) }));
       setCart([]); setClient({ name: "", phone: "", address: "", gstin: "" }); onChanged(); setMessage("");
+      window.dispatchEvent(new CustomEvent("wms-navigate", { detail: "orders" }));
     } catch (error) { setMessage(error.message); }
   };
-  return <div className="dispatch-layout"><section className="panel scanner-panel"><SectionHeader title="AI dispatch scanner" action="Review before commit" />{!active ? <div className="camera-placeholder compact"><div className="camera-symbol">◉</div><p>Scan tools into a temporary dispatch cart. Inventory changes only after confirmation.</p><button className="button primary" onClick={() => setActive(true)}>Start camera</button></div> : <><CameraScanner active={active} onDetections={addDetection} onError={setMessage} /><button className="button secondary" onClick={() => setActive(false)}>Stop camera</button></>}</section><section className="panel cart-panel"><SectionHeader title="Dispatch cart" action={`${cart.reduce((sum, item) => sum + item.quantity, 0)} units`} />{cart.length ? <div className="cart-items">{cart.map((item) => <div className="cart-item" key={item._id}><div><strong>{item.name}</strong><small>{item.sku} · {currency(item.sellingPrice)} each · stock {item.stock}</small></div><input type="number" min="1" value={item.quantity} onChange={(event) => updateQuantity(item._id, event.target.value)} /><button className="icon-button" onClick={() => setCart((current) => current.filter((entry) => entry._id !== item._id))}>×</button></div>)}</div> : <div className="empty">Your cart is empty. Use the camera or add a product manually below.</div>}<select className="field" value="" onChange={(event) => { const product = products.find((item) => item._id === event.target.value); if (product) setCart((current) => [...current, { ...product, quantity: 1 }]); }}><option value="">+ Add product manually</option>{products.map((product) => <option key={product._id} value={product._id}>{product.name} · {product.stock} in stock</option>)}</select>{cart.length > 0 && <><div className="total-row"><span>Grand total</span><strong>{currency(total)}</strong></div><div className="client-form"><p className="eyebrow">CLIENT DETAILS</p><input className="field" placeholder="Client / company name *" value={client.name} onChange={(e) => setClient({ ...client, name: e.target.value })} /><input className="field" placeholder="Phone number *" value={client.phone} onChange={(e) => setClient({ ...client, phone: e.target.value })} /><textarea className="field" placeholder="Delivery address *" value={client.address} onChange={(e) => setClient({ ...client, address: e.target.value })} /><input className="field" placeholder="GSTIN (optional)" value={client.gstin} onChange={(e) => setClient({ ...client, gstin: e.target.value })} /><button className="button primary" onClick={confirmDispatch}>Confirm dispatch & generate invoice</button></div></>}</section>{message && <div className="toast error-state">{message}</div>}{invoice && <Invoice invoice={invoice} onClose={() => setInvoice(null)} />}</div>;
+  return <div className="dispatch-layout"><section className="panel scanner-panel"><SectionHeader title="AI dispatch scanner" action="Order creation does not reduce stock" />{!active ? <div className="camera-placeholder compact"><div className="camera-symbol">◉</div><h2>AI Camera Scanner</h2><p>Identify tools and add them to the temporary order cart.</p><button className="button primary" onClick={() => { setMessage(""); setActive(true); }}>Start camera</button></div> : <><CameraScanner active={active} onDetections={addDetection} onError={setMessage} /><button className="button secondary" onClick={() => setActive(false)}>Stop camera</button></>}</section><section className="panel cart-panel"><SectionHeader title="New order cart" action={`${cart.reduce((sum, item) => sum + item.quantity, 0)} units`} />{cart.length ? <div className="cart-items">{cart.map((item) => <div className="cart-item" key={item._id}><div><strong>{item.name}</strong><small>{item.sku} · {currency(item.sellingPrice)} each · stock {item.stock}</small></div><input type="number" min="1" value={item.quantity} onChange={(event) => updateQuantity(item._id, event.target.value)} /><button className="icon-button" onClick={() => setCart((current) => current.filter((entry) => entry._id !== item._id))}>×</button></div>)}</div> : <div className="empty">Your cart is empty. Use the camera or add a product manually below.</div>}<select className="field" value="" onChange={(event) => { const product = products.find((item) => item._id === event.target.value); if (product) setCart((current) => [...current, { ...product, quantity: 1 }]); }}><option value="">+ Add product manually</option>{products.map((product) => <option key={product._id} value={product._id}>{product.name} · {product.stock} in stock</option>)}</select>{cart.length > 0 && <><div className="total-row"><span>Order total</span><strong>{currency(total)}</strong></div><div className="client-form"><p className="eyebrow">CLIENT DETAILS</p><input className="field" placeholder="Client / company name *" value={client.name} onChange={(e) => setClient({ ...client, name: e.target.value })} /><input className="field" placeholder="Phone number *" value={client.phone} onChange={(e) => setClient({ ...client, phone: e.target.value })} /><textarea className="field" placeholder="Delivery address *" value={client.address} onChange={(e) => setClient({ ...client, address: e.target.value })} /><input className="field" placeholder="GSTIN (optional)" value={client.gstin} onChange={(e) => setClient({ ...client, gstin: e.target.value })} /><button className="button primary" onClick={createOrder}>Create order</button></div></>}</section><section className="panel"><SectionHeader title="Recent orders" action="Invoice access" />{recentOrders.map((order) => <div className="recent-order-row" key={order._id}><div><strong>{order.orderNumber}</strong><small>{order.client.name} · {statusLabel(order.status)}</small></div><button className="link-button" onClick={() => window.dispatchEvent(new CustomEvent("wms-show-invoice", { detail: buildInvoice(order) }))}>View invoice</button></div>)}</section>{message && <div className="toast error-state">{message}</div>}</div>;
+}
+
+function buildInvoice(order) {
+  const source = order.order || order;
+  return { number: source.orderNumber, date: new Date(source.createdAt), client: source.client, items: source.items.map((item) => ({ ...item, sellingPrice: item.unitPrice })), total: source.totalAmount, paymentStatus: source.paymentStatus, totalPaid: source.totalPaid, balanceAmount: source.balanceAmount, advancePercentage: source.advancePercentage, advanceRequired: source.advanceRequired };
 }
 
 function Invoice({ invoice, onClose }) {
-  return <div className="invoice-overlay"><div className="invoice print-invoice"><div className="invoice-actions"><button className="button secondary" onClick={onClose}>Close</button><button className="button primary" onClick={() => window.print()}>Print invoice</button></div><div className="invoice-head"><div><p className="eyebrow">SMARTWMS</p><h2>Dispatch invoice</h2></div><div><strong>{invoice.number}</strong><p>{invoice.date.toLocaleString()}</p></div></div><div className="invoice-client"><strong>{invoice.client.name}</strong><span>{invoice.client.phone}</span><span>{invoice.client.address}</span>{invoice.client.gstin && <span>GSTIN: {invoice.client.gstin}</span>}</div><table className="data-table"><thead><tr><th>Product</th><th>SKU</th><th>Qty</th><th>Unit price</th><th>Subtotal</th></tr></thead><tbody>{invoice.items.map((item) => <tr key={item._id}><td>{item.name}</td><td>{item.sku}</td><td>{item.quantity}</td><td>{currency(item.sellingPrice)}</td><td>{currency(item.quantity * item.sellingPrice)}</td></tr>)}</tbody></table><div className="invoice-total">Grand total <strong>{currency(invoice.total)}</strong></div></div></div>;
+  const subtotal = invoice.items.reduce((sum, item) => sum + item.quantity * item.sellingPrice, 0);
+  const formattedDate = invoice.date.toLocaleDateString("en-IN", { day: "2-digit", month: "2-digit", year: "numeric" });
+  return (
+    <div className="invoice-overlay">
+      <article className="invoice print-invoice" aria-label="Tax invoice">
+        <div className="invoice-actions">
+          <button className="button secondary" onClick={onClose}>Close</button>
+          <button className="button primary" onClick={() => window.print()}>Print invoice</button>
+        </div>
+        <header className="invoice-header">
+          <div>
+            <p className="invoice-company">DENIKA BUSINESS SOLUTIONS</p>
+            <p className="invoice-document-title">TAX INVOICE</p>
+          </div>
+          <dl className="invoice-meta">
+            <div><dt>Invoice No</dt><dd>{invoice.number}</dd></div>
+            <div><dt>Invoice Date</dt><dd>{formattedDate}</dd></div>
+          </dl>
+        </header>
+
+        <div className="invoice-rule" />
+        <section className="invoice-parties">
+          <div className="invoice-party">
+            <h3>SELLER DETAILS</h3>
+            <strong>{INVOICE_SELLER_DETAILS.name}</strong>
+            <span>{INVOICE_SELLER_DETAILS.address}</span>
+            <span>Phone: {INVOICE_SELLER_DETAILS.phone}</span>
+            <span>Email: {INVOICE_SELLER_DETAILS.email}</span>
+            <span>GSTIN: {INVOICE_SELLER_DETAILS.gstin}</span>
+          </div>
+          <div className="invoice-party">
+            <h3>BILL TO</h3>
+            <strong>{invoice.client.name}</strong>
+            <span>Phone: {invoice.client.phone}</span>
+            <span>{invoice.client.address}</span>
+            {invoice.client.gstin && <span>GSTIN: {invoice.client.gstin}</span>}
+          </div>
+        </section>
+
+        <table className="invoice-table">
+          <thead><tr><th>Sl. No.</th><th>Product Description</th><th>SKU</th><th>Qty</th><th>Unit Price</th><th>Amount</th></tr></thead>
+          <tbody>{invoice.items.map((item, index) => (
+            <tr key={item._id || item.sku}>
+              <td>{index + 1}</td><td className="invoice-product">{item.name}</td><td>{item.sku}</td><td>{item.quantity}</td>
+              <td>{invoiceCurrency(item.sellingPrice)}</td><td>{invoiceCurrency(item.quantity * item.sellingPrice)}</td>
+            </tr>
+          ))}</tbody>
+        </table>
+
+        <div className="invoice-summary">
+          <div className="amount-words"><span>Amount in Words:</span><strong>{amountInWords(invoice.total)}</strong></div>
+          <dl className="invoice-totals">
+            <div><dt>Subtotal</dt><dd>{invoiceCurrency(subtotal)}</dd></div>
+            <div><dt>Discount</dt><dd>{invoiceCurrency(0)}</dd></div>
+            <div><dt>Taxable Amount</dt><dd>{invoiceCurrency(subtotal)}</dd></div>
+            <div><dt>GST</dt><dd>{invoiceCurrency(0)}</dd></div>
+            <div className="grand-total"><dt>GRAND TOTAL</dt><dd>{invoiceCurrency(invoice.total)}</dd></div>
+          </dl>
+        </div>
+
+        <section className="invoice-terms">
+          <div><strong>Advance:</strong> <span>{invoice.advancePercentage || 30}% · {invoiceCurrency(invoice.advanceRequired || 0)}</span></div>
+          <div><strong>Payment Terms:</strong> <span>Full payment before dispatch</span></div>
+          <div><strong>Payment Status:</strong> <span>{statusLabel(invoice.paymentStatus)}</span></div>
+          <div><strong>Total Paid:</strong> <span>{invoiceCurrency(invoice.totalPaid || 0)}</span></div>
+          <div><strong>Balance Due:</strong> <span>{invoiceCurrency(invoice.balanceAmount || 0)}</span></div>
+        </section>
+        <footer className="invoice-footer">
+          <p>Thank you for your business.</p>
+          <div><strong>For Denika Business Solutions</strong><span className="sample-signature" aria-label="Sample digital signature">Denika Business Solutions</span><span>Authorized Signatory</span></div>
+        </footer>
+      </article>
+    </div>
+  );
+}
+
+const statusLabel = (status) => status?.replaceAll("_", " ") || "—";
+
+function Orders({ refreshKey }) {
+  const [orders, setOrders] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState(null);
+  const [error, setError] = useState("");
+  const loadOrders = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const data = await api("/orders");
+      setOrders(Array.isArray(data) ? data : data.orders || []);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+  useEffect(() => {
+    const timer = window.setTimeout(loadOrders, 0);
+    return () => window.clearTimeout(timer);
+  }, [loadOrders, refreshKey]);
+  useEffect(() => {
+    const openOrder = (event) => setSelected(event.detail);
+    window.addEventListener("wms-open-order", openOrder);
+    return () => window.removeEventListener("wms-open-order", openOrder);
+  }, []);
+  return <DataState loading={loading} error={error}>{!orders.length ? <div className="panel state">No orders have been created yet.</div> : <section className="panel"><SectionHeader title="Order register" action={`${orders.length} orders`} /><div className="table-scroll"><table className="data-table orders-table"><thead><tr><th>Order</th><th>Client</th><th>Total</th><th>Payment</th><th>Order status</th><th>Created</th><th>Actions</th></tr></thead><tbody>{orders.map((order) => <tr key={order._id}><td><strong>{order.orderNumber}</strong></td><td>{order.client.name}<small className="table-subtext">{order.client.phone}</small></td><td>{currency(order.totalAmount)}</td><td><span className="badge payment-badge">{statusLabel(order.paymentStatus)}</span><small className="table-subtext">Due {currency(order.balanceAmount)}</small></td><td><span className={`badge order-${order.status.toLowerCase()}`}>{statusLabel(order.status)}</span></td><td>{new Date(order.createdAt).toLocaleDateString("en-IN")}</td><td className="row-actions"><button className="link-button" onClick={() => setSelected(order._id)}>View details</button><button className="link-button" onClick={() => window.dispatchEvent(new CustomEvent("wms-show-invoice", { detail: buildInvoice(order) }))}>View invoice</button></td></tr>)}</tbody></table></div></section>}{selected && <OrderDetails orderId={selected} onClose={() => setSelected(null)} onChanged={loadOrders} />}</DataState>;
+}
+
+function OrderDetails({ orderId, onClose, onChanged }) {
+  const [order, setOrder] = useState(null);
+  const [payment, setPayment] = useState({ amount: "", method: "UPI", paymentType: "ADVANCE", reference: "", notes: "" });
+  const [showPayment, setShowPayment] = useState(false);
+  const [message, setMessage] = useState("");
+  const load = useCallback(() => api(`/orders/${orderId}`).then(setOrder).catch((err) => setMessage(err.message)), [orderId]);
+  useEffect(() => { load(); }, [load]);
+  const action = async (path) => {
+    try { await api(`/orders/${orderId}/${path}`, { method: "PATCH" }); await load(); onChanged(); }
+    catch (error) { setMessage(error.message); }
+  };
+  const recordPayment = async () => {
+    try {
+      await api(`/orders/${orderId}/payments`, { method: "POST", body: JSON.stringify(payment) });
+      setPayment({ amount: "", method: "UPI", paymentType: "PARTIAL", reference: "", notes: "" }); setShowPayment(false); await load(); onChanged();
+    } catch (error) { setMessage(error.message); }
+  };
+  if (!order) return <div className="modal-overlay"><div className="panel order-modal">Loading order…</div></div>;
+  const steps = ["PROCESSING", "ADVANCE_RECEIVED", "PACKED", "DISPATCHED"];
+  const currentIndex = steps.indexOf(order.status);
+  const invoice = buildInvoice(order);
+  const openPayment = () => {
+    const amount = order.totalPaid < order.advanceRequired ? order.advanceRequired - order.totalPaid : order.balanceAmount;
+    setPayment((current) => ({ ...current, amount: amount.toFixed(2), paymentType: order.totalPaid < order.advanceRequired ? "ADVANCE" : "FULL" }));
+    setShowPayment(true);
+  };
+  return <div className="modal-overlay"><div className="panel order-modal"><div className="modal-header"><div><p className="eyebrow">ORDER DETAILS</p><h2>{order.orderNumber}</h2><span className={`badge order-${order.status.toLowerCase()}`}>{statusLabel(order.status)}</span></div><button className="icon-button" onClick={onClose}>×</button></div><div className="order-client-summary"><strong>{order.client.name}</strong><span>{order.client.phone}</span><span>{order.client.address}</span></div><section className="order-detail-section"><h3>Items</h3><table className="data-table"><thead><tr><th>Product</th><th>SKU</th><th>Qty</th><th>Unit price</th><th>Amount</th></tr></thead><tbody>{order.items.map((item) => <tr key={item.sku}><td>{item.name}</td><td>{item.sku}</td><td>{item.quantity}</td><td>{currency(item.unitPrice)}</td><td>{currency(item.quantity * item.unitPrice)}</td></tr>)}</tbody></table></section><section className="order-detail-grid"><div className="order-detail-section"><h3>Payment summary</h3><div className="summary-line"><span>Order total</span><strong>{currency(order.totalAmount)}</strong></div><div className="summary-line"><span>Advance required ({order.advancePercentage}%)</span><strong>{currency(order.advanceRequired)}</strong></div><div className="summary-line"><span>Total paid</span><strong>{currency(order.totalPaid)}</strong></div><div className="summary-line"><span>Balance due</span><strong>{currency(order.balanceAmount)}</strong></div><div className="summary-line"><span>Status</span><span className="badge payment-badge">{statusLabel(order.paymentStatus)}</span></div></div><div className="order-detail-section"><h3>Payment history</h3>{order.payments?.length ? order.payments.map((item) => <div className="payment-history-row" key={item._id}><span>{new Date(item.createdAt).toLocaleDateString("en-IN")} · {item.paymentType}</span><strong>{currency(item.amount)}</strong><small>{item.method}{item.reference ? ` · ${item.reference}` : ""}</small></div>) : <div className="empty compact-empty">No payments recorded.</div>}</div></section><section className="order-detail-section"><h3>Order timeline</h3><div className="order-timeline">{steps.map((step, index) => <div className={`timeline-step ${index <= currentIndex ? "complete" : ""} ${step === order.status ? "current" : ""}`} key={step}><span>{index <= currentIndex ? "✓" : index + 1}</span><small>{statusLabel(step)}</small></div>)}</div></section><div className="order-actions">{order.status !== "DISPATCHED" && order.status !== "CANCELLED" && <><button className="button secondary" onClick={openPayment}>Record payment</button>{order.status === "ADVANCE_RECEIVED" && <button className="button primary" onClick={() => action("pack")}>Pack order</button>}{order.status === "PACKED" && order.paymentStatus === "FULLY_PAID" && <button className="button primary" onClick={() => action("dispatch")}>Dispatch order</button>}<button className="button danger-button" onClick={() => action("cancel")}>Cancel order</button></>}{<button className="button secondary" onClick={() => window.dispatchEvent(new CustomEvent("wms-show-invoice", { detail: invoice }))}>View invoice</button>}{order.status === "CANCELLED" && <button className="button primary" onClick={onClose}>Close</button>}</div>{message && <div className="inline-error">{message}</div>}{showPayment && <div className="payment-form"><h3>Record payment</h3><input className="field" type="number" min="0.01" step="0.01" placeholder="Amount" value={payment.amount} onChange={(event) => setPayment({ ...payment, amount: event.target.value })} /><select className="field" value={payment.paymentType} onChange={(event) => setPayment({ ...payment, paymentType: event.target.value })}><option value="ADVANCE">Advance</option><option value="PARTIAL">Partial</option><option value="FULL">Full</option></select><select className="field" value={payment.method} onChange={(event) => setPayment({ ...payment, method: event.target.value })}><option value="UPI">UPI</option><option value="CASH">Cash</option><option value="BANK_TRANSFER">Bank transfer</option><option value="CARD">Card</option><option value="OTHER">Other</option></select><input className="field" placeholder="Reference number (optional)" value={payment.reference} onChange={(event) => setPayment({ ...payment, reference: event.target.value })} /><button className="button primary" onClick={recordPayment}>Save payment</button></div>}</div></div>;
 }
 
 function Inventory({ refreshKey }) {
@@ -341,8 +598,10 @@ function ProductTable({ products, compact = false }) {
 
 function History({ refreshKey }) {
   const [movements, setMovements] = useState([]); const [error, setError] = useState("");
+  const [orders, setOrders] = useState([]);
   useEffect(() => { api("/products/movements/history").then(setMovements).catch((err) => setError(err.message)); }, [refreshKey]);
-  return <DataState loading={!movements.length && !error} error={error}><section className="panel"><SectionHeader title="Movement ledger" action="Newest first" /><div className="table-scroll"><table className="data-table"><thead><tr><th>Product</th><th>SKU</th><th>Type</th><th>Quantity</th><th>Date and time</th></tr></thead><tbody>{movements.map((movement) => <tr key={movement._id}><td><strong>{movement.product?.name || "Deleted product"}</strong></td><td className="muted">{movement.product?.sku || "—"}</td><td><span className={`badge ${movement.type.toLowerCase()}`}>{movement.type}</span></td><td>{movement.quantity}</td><td>{new Date(movement.createdAt).toLocaleString()}</td></tr>)}</tbody></table></div></section></DataState>;
+  useEffect(() => { api("/orders").then((data) => setOrders((Array.isArray(data) ? data : data.orders || []).filter((order) => order.status === "DISPATCHED"))).catch(() => {}); }, [refreshKey]);
+  return <DataState loading={!movements.length && !error} error={error}><section className="panel"><SectionHeader title="Movement ledger" action="Newest first" /><div className="table-scroll"><table className="data-table"><thead><tr><th>Product</th><th>SKU</th><th>Type</th><th>Quantity</th><th>Date and time</th></tr></thead><tbody>{movements.map((movement) => <tr key={movement._id}><td><strong>{movement.product?.name || "Deleted product"}</strong></td><td className="muted">{movement.product?.sku || "—"}</td><td><span className={`badge ${movement.type.toLowerCase()}`}>{movement.type}</span></td><td>{movement.quantity}</td><td>{new Date(movement.createdAt).toLocaleString()}</td></tr>)}</tbody></table></div></section><section className="panel"><SectionHeader title="Dispatch history" action={`${orders.length} orders`} /><div className="table-scroll"><table className="data-table"><thead><tr><th>Order</th><th>Client</th><th>Items</th><th>Total</th><th>Payment</th><th>Dispatched</th><th>Actions</th></tr></thead><tbody>{orders.map((order) => <tr key={order._id}><td><strong>{order.orderNumber}</strong></td><td>{order.client.name}</td><td>{order.items.reduce((sum, item) => sum + item.quantity, 0)} units</td><td>{currency(order.totalAmount)}</td><td><span className="badge payment-badge">{statusLabel(order.paymentStatus)}</span></td><td>{new Date(order.dispatchedAt || order.createdAt).toLocaleDateString("en-IN")}</td><td className="row-actions">  <button className="link-button" onClick={() => { window.dispatchEvent(new CustomEvent("wms-navigate", { detail: "orders" })); window.setTimeout(() => window.dispatchEvent(new CustomEvent("wms-open-order", { detail: order._id })), 0); }}>View details</button><button className="link-button" onClick={() => window.dispatchEvent(new CustomEvent("wms-show-invoice", { detail: buildInvoice(order) }))}>View invoice</button></td></tr>)}</tbody></table></div></section></DataState>;
 }
 
 export default App;
